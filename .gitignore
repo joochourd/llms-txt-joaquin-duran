@@ -1,0 +1,83 @@
+# Build outputs and dependency caches
+.gradle/
+.gradle-home/
+.kotlin/
+**/build/
+**/out/
+**/node_modules/
+**/dist/
+.npm-cache/
+coverage/
+frontend/test-results/
+frontend/playwright-report/
+*.tsbuildinfo
+
+# IDE and operating system files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+!.env.production.example
+.aws/
+.ssh/
+.npmrc
+.netrc
+credentials
+*.credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.secret
+
+# Generated binaries (the Gradle wrapper is required source tooling)
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.war
+*.zip
+*.tar
+*.gz
+*.dmg
+
+# Local database and temporary files
+.dynamodb/
+dynamodb-data/
+*.db
+*.db-journal
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.tmp/
+tmp/
+
+# Existing private preparation materials: preserve locally, exclude from delivery
+/spec.md
+/emails.md
+/LLMs.txt Generator - Version 3.md
+/videos/
+/research/
+/responses
+
+# Private agent state, prompts, and local repository preparation notes
+/.agents/
+/.codex/
+/private/
+/prompts/
+/notes/
+/docs/private/
+/docs/repository-preparation.md
+/docs/implementation-progress.md
+
+# Local coding-agent instructions
+/AGENTS.md

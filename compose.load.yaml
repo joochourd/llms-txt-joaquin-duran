@@ -1,0 +1,7 @@
+# Opt-in local tuning. The normal Compose configuration keeps its existing quotas.
+services:
+  app:
+    environment:
+      MAX_CONCURRENT_CRAWLS: ${LOAD_WORKERS:-8}
+      MAX_OUTSTANDING_RUNS: "100"
+      MAX_MONITORED_IDENTITIES: "100"

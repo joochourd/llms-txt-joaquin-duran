@@ -1,0 +1,122 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Single DynamoDB table for the llms.txt evaluation application.",
+  "Parameters": {
+    "TableName": {
+      "Type": "String",
+      "Default": "llms-txt-production",
+      "AllowedPattern": "[a-zA-Z0-9_.-]{3,255}"
+    }
+  },
+  "Resources": {
+    "ApplicationTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Ref": "TableName"
+        },
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "pk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "sk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "workPk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "workSk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "duePk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "dueSk",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "pk",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "sk",
+            "KeyType": "RANGE"
+          }
+        ],
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "WorkIndex",
+            "KeySchema": [
+              {
+                "AttributeName": "workPk",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "workSk",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "KEYS_ONLY"
+            }
+          },
+          {
+            "IndexName": "DueIndex",
+            "KeySchema": [
+              {
+                "AttributeName": "duePk",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "dueSk",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "KEYS_ONLY"
+            }
+          }
+        ],
+        "TimeToLiveSpecification": {
+          "AttributeName": "expiresAtEpochSeconds",
+          "Enabled": true
+        },
+        "DeletionProtectionEnabled": false,
+        "Tags": [
+          {
+            "Key": "Application",
+            "Value": "llms-txt-joaquin-duran"
+          },
+          {
+            "Key": "Environment",
+            "Value": "evaluation"
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "TableName": {
+      "Value": {
+        "Ref": "ApplicationTable"
+      }
+    },
+    "TableArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ApplicationTable",
+          "Arn"
+        ]
+      }
+    }
+  }
+}
