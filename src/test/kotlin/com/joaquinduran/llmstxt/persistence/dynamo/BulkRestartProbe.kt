@@ -41,7 +41,7 @@ fun main(args: Array<String>) {
                 BulkBatchProcessor(store, batches, admission, clock).use { it.process(batch.batchId) }
                 check(store.batch(batch.batchId)?.nextAdmissionIndex == 120)
                 check(store.putAbsent(markerKey + mapOf("entityType" to text("BulkRestartProbe"), "batchId" to text(batch.batchId))))
-                println("Persisted 1000 inputs with a partial admission cursor and an active bulk reservation.")
+                println("Persisted 1000 inputs with a partial admission cursor and durable work discovery keys.")
             }
 
             "verify", "delete" -> {
@@ -54,20 +54,18 @@ fun main(args: Array<String>) {
                 }
                 val id = marker.s("batchId")
                 val restored = requireNotNull(store.batch(id))
-                check(restored.received && restored.bulkSlotReserved && restored.nextAdmissionIndex == 120)
+                check(restored.received && restored.workPending && restored.nextAdmissionIndex == 120)
                 check(batches.inputs(restored, 0, 1000) == inputs)
-                check(store.get(DomainKeys.key("CAPACITY#BULK", "META")).n("activeBatches") == 1L)
                 BulkBatchProcessor(store, batches, admission, clock).use { processor ->
                     repeat(30) { processor.process(id) }
                 }
                 val completed = requireNotNull(store.batch(id))
-                check(completed.admissionComplete && completed.nextCompletionIndex == 1000 && !completed.bulkSlotReserved)
+                check(completed.admissionComplete && completed.nextCompletionIndex == 1000 && !completed.workPending)
                 check(store.capacity() == Capacity(0, 0))
-                check(store.get(DomainKeys.key("CAPACITY#BULK", "META")).n("activeBatches") == 0L)
                 val page = AdmissionStatus(store, admission, clock).batch(id, BatchPage(offset = 900, limit = 100))
                 check(page.status == "COMPLETED" && page.totalItems == 1000 && page.items.size == 100)
                 check(page.items.map { it.inputUrl } == inputs.takeLast(100))
-                println("Verified all bulk inputs, cursor recovery, final page and exactly-once backlog release after restart.")
+                println("Verified all bulk inputs, cursor recovery, final page and completed retention after restart.")
             }
         }
     }

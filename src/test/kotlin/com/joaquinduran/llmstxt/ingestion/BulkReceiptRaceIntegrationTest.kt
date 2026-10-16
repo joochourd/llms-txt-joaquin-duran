@@ -35,7 +35,7 @@ class BulkReceiptRaceIntegrationTest : MonitoringFixture() {
         assertTrue(sealCommitted)
         assertFalse(expired)
         assertTrue(accepted.received)
-        assertTrue(accepted.bulkSlotReserved)
+        assertTrue(accepted.workPending)
         assertEquals(0, accepted.nextCompletionIndex)
         assertEquals(11, BulkBatchStore(store, clock, settings).inputs(accepted, 0, 11).size)
     }
@@ -65,7 +65,7 @@ class BulkReceiptRaceIntegrationTest : MonitoringFixture() {
 
         assertTrue(sealRejected)
         assertFalse(abandoned.received)
-        assertFalse(abandoned.bulkSlotReserved)
+        assertFalse(abandoned.workPending)
         assertEquals(0L, store.capacity().outstandingRuns)
     }
 

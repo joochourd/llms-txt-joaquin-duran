@@ -91,7 +91,7 @@ class DurableQueueWaitIntegrationTest : MonitoringFixture() {
 
         assertEquals("COMPLETED", page.status)
         assertEquals(11, page.items.size)
-        assertFalse(finished.bulkSlotReserved)
+        assertFalse(finished.workPending)
         assertTrue(finished.expiresAtEpochSeconds >= clock.now / 1000 + settings.batchRetentionDays * 86400)
         assertTrue(store.get(inputKey).containsKey("expiresAtEpochSeconds"))
         assertTrue(store.get(DomainKeys.batchItem(batch.batchId, 0)).containsKey("expiresAtEpochSeconds"))
@@ -135,7 +135,7 @@ class DurableQueueWaitIntegrationTest : MonitoringFixture() {
         }
 
         assertEquals("COMPLETED", AdmissionStatus(store, service, clock).batch(batch.batchId).status)
-        assertFalse(requireNotNull(store.batch(batch.batchId)).bulkSlotReserved)
+        assertFalse(requireNotNull(store.batch(batch.batchId)).workPending)
         assertEquals(0L, store.capacity().outstandingRuns)
     }
 
@@ -156,7 +156,7 @@ class DurableQueueWaitIntegrationTest : MonitoringFixture() {
         processor().use { it.process(batch.batchId) }
 
         assertEquals(0, requireNotNull(store.batch(batch.batchId)).nextCompletionIndex)
-        assertTrue(requireNotNull(store.batch(batch.batchId)).bulkSlotReserved)
+        assertTrue(requireNotNull(store.batch(batch.batchId)).workPending)
         assertEquals(1L, store.capacity().outstandingRuns)
     }
 

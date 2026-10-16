@@ -34,7 +34,7 @@ class AdmissionStatus(
         page: BatchPage = BatchPage(),
     ): BatchResponse {
         var batch = store.batch(id, false) ?: store.batch(id, true) ?: throw ApiProblem(404, "NOT_FOUND", "Batch not found.")
-        if ((!batch.bulk || !batch.bulkSlotReserved) &&
+        if ((!batch.bulk || !batch.workPending) &&
             batch.expiresAtEpochSeconds <= clock.millis() / 1000
         ) {
             throw ApiProblem(410, "EXPIRED", "Batch metadata has expired.")

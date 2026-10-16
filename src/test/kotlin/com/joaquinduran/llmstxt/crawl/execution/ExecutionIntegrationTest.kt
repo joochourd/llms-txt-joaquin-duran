@@ -74,7 +74,7 @@ class ExecutionIntegrationTest {
         client = DynamoClients.create(dynamo)
         LocalTableBootstrap(client, dynamo).initialize()
         store = AdmissionStore(client, dynamo)
-        settings = AdmissionConfiguration().apply { maxOpenBulkBatches = 20 }
+        settings = AdmissionConfiguration()
         config =
             CrawlConfiguration().apply { fetch.minRequestIntervalMillis = 0 }
         urls = UrlIdentityResolver(settings)

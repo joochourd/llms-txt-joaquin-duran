@@ -4,8 +4,6 @@ import com.joaquinduran.llmstxt.api.downloads.DownloadNames
 import com.joaquinduran.llmstxt.api.dto.BatchResponse
 import com.joaquinduran.llmstxt.api.dto.CrawlResponse
 import com.joaquinduran.llmstxt.api.dto.ResourceResponse
-import com.joaquinduran.llmstxt.api.limits.ApiRateLimiter
-import com.joaquinduran.llmstxt.api.limits.ClientIpResolver
 import com.joaquinduran.llmstxt.api.mapping.MonitoringView
 import com.joaquinduran.llmstxt.api.mapping.dto
 import com.joaquinduran.llmstxt.api.query.AdmissionStatus
@@ -23,37 +21,19 @@ class CrawlController(
     private val reader: CrawlResultReader,
     private val admission: AdmissionService,
     private val status: AdmissionStatus,
-    private val rates: ApiRateLimiter,
-    private val clients: ClientIpResolver,
     private val monitoring: MonitoringView,
 ) {
-    private fun rate(request: HttpRequest<*>) = rates.check(clients.client(request), submission = false)
-
     @Get("/api/crawls/{identityId}")
-    fun crawl(
-        identityId: String,
-        request: HttpRequest<*>,
-    ): CrawlResponse {
-        rate(request)
+    fun crawl(identityId: String): CrawlResponse {
         val accepted = reader.accepted(identityId)
         return accepted.dto(monitoring.response(accepted.metadata))
     }
 
     @Get("/api/crawls/{identityId}/resources")
-    fun resources(
-        identityId: String,
-        request: HttpRequest<*>,
-    ): List<ResourceResponse> {
-        rate(request)
-        return reader.accepted(identityId).resources.map { it.dto() }
-    }
+    fun resources(identityId: String): List<ResourceResponse> = reader.accepted(identityId).resources.map { it.dto() }
 
     @Post("/api/crawls/{identityId}/refresh")
-    fun refresh(
-        identityId: String,
-        request: HttpRequest<*>,
-    ): HttpResponse<BatchResponse> {
-        rates.check(clients.client(request), submission = true, force = true)
+    fun refresh(identityId: String): HttpResponse<BatchResponse> {
         val metadata = reader.metadata(identityId)
         val batch = admission.submit(listOf(metadata.normalizedSeedUrl), true)
         val response = status.batch(batch.batchId)
@@ -67,10 +47,7 @@ class CrawlController(
     fun latest(
         identityId: String,
         request: HttpRequest<*>,
-    ): HttpResponse<ByteArray> {
-        rate(request)
-        return artifactResponse(reader.latestArtifact(identityId) { hash -> isCached(request, hash) })
-    }
+    ): HttpResponse<ByteArray> = artifactResponse(reader.latestArtifact(identityId) { hash -> isCached(request, hash) })
 
     private fun isCached(
         request: HttpRequest<*>,

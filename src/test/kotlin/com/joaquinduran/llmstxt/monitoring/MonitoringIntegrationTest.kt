@@ -189,14 +189,13 @@ class MonitoringIntegrationTest : MonitoringFixture() {
     }
 
     @Test
-    fun `internal checks bypass freshness and force cooldown while duplicate due attempts coalesce`() {
+    fun `internal checks bypass freshness while duplicate due attempts coalesce`() {
         config.monitoring.monitorIntervalSeconds = 60
         val meta = canonical()
         val before = requireNotNull(store.meta(meta.identityId))
         val run = due(meta.identityId)
         assertTrue(clock.now - requireNotNull(before.acceptedObservationStartedAt) < settings.crawlFreshnessTtlSeconds * 1000)
         assertEquals("MONITORING", run.trigger)
-        assertNull(store.meta(meta.identityId)?.lastForceCreatedAt)
         assertEquals(MonitoringAdmissionKind.SKIPPED, monitoring.admit(before).kind)
         clock.now = requireNotNull(store.meta(meta.identityId)?.nextCheckAt)
         assertEquals(MonitoringAdmissionKind.COALESCED, monitoring.admit(requireNotNull(store.meta(meta.identityId))).kind)
@@ -220,7 +219,7 @@ class MonitoringIntegrationTest : MonitoringFixture() {
     }
 
     @Test
-    fun `capacity local origin and durable backoff defer without a force charge`() {
+    fun `capacity local origin and durable backoff defer automatic checks`() {
         val meta = canonical()
         clock.now = requireNotNull(meta.nextCheckAt)
         settings.maxOutstandingRuns = 1
@@ -237,7 +236,6 @@ class MonitoringIntegrationTest : MonitoringFixture() {
         assertEquals(MonitoringAdmissionKind.DEFERRED, monitoring.admit(requireNotNull(store.meta(meta.identityId))).kind)
         assertTrue(requireNotNull(store.meta(meta.identityId)?.nextCheckAt) >= blocked)
         assertEquals(Capacity(0, 1), store.capacity())
-        assertNull(store.meta(meta.identityId)?.lastForceCreatedAt)
     }
 
     @Test
