@@ -52,9 +52,13 @@ The API does not use client-IP identification, forwarded-header trust, HTTP rate
 
 ### Updates and single-JVM operation
 
-Keep GitHub autodeploy disabled. Railway's zero overlap setting applies after the new deployment is active; the new JVM can start workers while its readiness check runs. It alone does not guarantee process exclusivity.
+Keep Railway's native GitHub autodeploy disabled. GitHub Actions owns production releases. Railway's zero overlap setting applies after the new deployment is active; the new JVM can start workers while its readiness check runs. It alone does not guarantee process exclusivity.
 
-For this evaluation, use explicit stop-before-start updates: wait for active work to settle when practical, remove/stop the old deployment, confirm it has stopped, then start the reviewed replacement. This accepts brief downtime and preserves the single-JVM origin coordination assumption without an unused volume. Repeat this procedure for rollback to a compatible version. Releases that require the removed batch-capacity counter and reservation fields need a data migration before reusing this table. No filesystem volume is needed because durable application state lives in DynamoDB. Do not run a local AWS-connected worker alongside the deployed service.
+The `Deploy production` GitHub Actions workflow verifies pull requests to `develop` and `main`. Every push to `main` verifies that exact commit, then deploys it with the pinned Railway CLI. Releases are serialized without cancelling an active release. The deployment helper removes previous deployments and confirms they are stopped before uploading the replacement, waits for Railway success, then checks public liveness and readiness. A stop timeout prevents the replacement from starting. A failed build/startup leaves production stopped and requires a corrected release or rollback; it never starts a second JVM to hide the failure. Brief downtime is intentional.
+
+Configure these repository Actions variables: `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID`, `RAILWAY_SERVICE_ID` and `RAILWAY_PUBLIC_URL`. Store only a Railway project/environment-scoped token as the Actions secret `RAILWAY_TOKEN`. AWS credentials remain sealed service variables in Railway; GitHub Actions does not receive them. Never substitute a workspace/account token. Restrict repository write access because main workflows can use the deployment token.
+
+Develop changes through pull requests to `develop`, then merge a release pull request from `develop` to `main`. The workflow summary records the commit, deployment ID and public URL. Use **Run workflow** on `main` to retry the current release after resolving an operational failure. To roll back, revert the release through the same pull-request flow so the reviewed rollback is also the version tracked by `main`. Releases that require the removed batch-capacity counter and reservation fields need a data migration before reusing this table. No filesystem volume is needed because durable application state lives in DynamoDB. Do not run a local AWS-connected worker alongside the deployed service.
 
 ## Public verification
 
