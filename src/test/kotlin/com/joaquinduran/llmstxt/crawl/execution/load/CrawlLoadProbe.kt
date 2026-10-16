@@ -49,7 +49,6 @@ fun main(args: Array<String>) {
                 "crawl.enabled" to false,
                 "crawl.max-concurrent-crawls" to workers,
                 "admission.max-outstanding-runs" to 100,
-                "admission.max-open-bulk-batches" to 20,
                 "admission.max-monitored-identities" to 100,
                 "admission.max-queue-wait-seconds" to 1800,
                 "test-load.enabled" to true,
@@ -77,7 +76,7 @@ private fun measure(
     val mapper = context.getBean(JsonMapper::class.java)
     val measurements = LoadMeasurements()
     val urls = (0 until 100).map { "https://site-${it.toString().padStart(3, '0')}.load-fixture.example/docs" }
-    // Preload through the real admission service, leaving public HTTP submission rates unchanged.
+    // Preload through the real admission service before starting worker measurements.
     val batches = urls.chunked(10).map { submitAndProcess(admission, store, context.getBean(Clock::class.java), it, false) }
     val rows = batches.flatMap { store.rows(it.batchId, true) }
     check(rows.size == 100 && rows.all { it.admission == Admission.QUEUED })

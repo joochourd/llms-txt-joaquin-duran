@@ -21,7 +21,6 @@ import java.net.http.HttpResponse
 class SmallBatchBacklogIntegrationTest : MonitoringFixture() {
     @Test
     fun `one seven and ten input receipts remain pending alongside a full 250 input batch`() {
-        settings.maxOpenBulkBatches = 5
         val large = service.submit(List(250) { "https://large-$it.example/" }, false)
         processor().use { processor ->
             repeat(2) { processor.process(large.batchId) }
@@ -109,7 +108,7 @@ class SmallBatchBacklogIntegrationTest : MonitoringFixture() {
 
         assertEquals(Admission.QUEUED, decision.admission)
         assertEquals("COMPLETED", AdmissionStatus(store, service, clock).batch(receipt.batchId).status)
-        assertFalse(requireNotNull(store.batch(receipt.batchId)).bulkSlotReserved)
+        assertFalse(requireNotNull(store.batch(receipt.batchId)).workPending)
         assertEquals(0, store.capacity().outstandingRuns)
     }
 
@@ -146,18 +145,14 @@ class SmallBatchBacklogIntegrationTest : MonitoringFixture() {
     }
 
     @Test
-    fun `small receipts respect the durable backlog limit without leaking a reservation`() {
-        settings.maxOpenBulkBatches = 1
-        val accepted = service.submit(listOf("https://first.example/"), false)
+    fun `many small receipts remain independently trackable without a backlog quota`() {
+        val receipts = (1..25).map { index -> service.submit(listOf("https://pending-$index.example/"), false) }
+        val status = AdmissionStatus(store, service, clock)
 
-        val rejected = assertThrows(ApiProblem::class.java) {
-            service.submit(listOf("https://second.example/"), false)
+        for (receipt in receipts) {
+            assertEquals("ADMITTING", status.batch(receipt.batchId).status)
+            assertTrue(requireNotNull(store.batch(receipt.batchId)).received)
         }
-
-        assertEquals("BACKLOG_FULL", rejected.code)
-        assertEquals(429, rejected.status)
-        assertTrue(requireNotNull(store.batch(accepted.batchId)).received)
-        assertEquals("1", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
         assertEquals(0, store.capacity().outstandingRuns)
     }
 

@@ -47,7 +47,7 @@ class BatchAdmissionReadsIntegrationTest : MonitoringFixture() {
         assertEquals(250, rows.size)
         assertTrue(rows.all { it.admission == Admission.CACHED })
         assertEquals(Capacity(0, 0), store.capacity())
-        assertFalse(requireNotNull(store.batch(batch.batchId)).bulkSlotReserved)
+        assertFalse(requireNotNull(store.batch(batch.batchId)).workPending)
         assertEquals(0, individualMetadataReads)
         assertEquals(5, groupedReads.size)
         assertEquals(
@@ -195,13 +195,13 @@ class BatchAdmissionReadsIntegrationTest : MonitoringFixture() {
         assertEquals(5, attempts)
         assertTrue(store.rows(batch.batchId, true).isEmpty())
         assertEquals(0, store.batch(batch.batchId)?.nextAdmissionIndex)
-        assertTrue(requireNotNull(store.batch(batch.batchId)).bulkSlotReserved)
+        assertTrue(requireNotNull(store.batch(batch.batchId)).workPending)
         assertEquals(Capacity(0, 0), store.capacity())
 
         processor(store).use { it.process(batch.batchId) }
 
         assertTrue(store.rows(batch.batchId, true).all { it.admission == Admission.CACHED })
-        assertFalse(requireNotNull(store.batch(batch.batchId)).bulkSlotReserved)
+        assertFalse(requireNotNull(store.batch(batch.batchId)).workPending)
     }
 
     @Test

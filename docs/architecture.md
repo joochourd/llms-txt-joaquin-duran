@@ -35,7 +35,7 @@ flowchart TD
 | Area | Responsibility | Entry point |
 | --- | --- | --- |
 | Bootstrap | Separate local/AWS administrative initialization and readiness probe | [Application.kt](../src/main/kotlin/com/joaquinduran/llmstxt/Application.kt) |
-| API | Validate HTTP inputs, apply request limits and map results/status codes | [AdmissionController](../src/main/kotlin/com/joaquinduran/llmstxt/api/controllers/AdmissionController.kt) |
+| API | Validate HTTP inputs and map results/status codes | [AdmissionController](../src/main/kotlin/com/joaquinduran/llmstxt/api/controllers/AdmissionController.kt) |
 | Ingestion | Normalize identity and decide cache, coalescing, rejection or new work | [AdmissionService](../src/main/kotlin/com/joaquinduran/llmstxt/ingestion/AdmissionService.kt) |
 | Execution | Discover and claim work, manage local permits and recover expired attempts | [WorkDispatcher](../src/main/kotlin/com/joaquinduran/llmstxt/crawl/execution/WorkDispatcher.kt) |
 | Crawling | Traverse within scope and budgets, validate prior selected resources | [CrawlRunner](../src/main/kotlin/com/joaquinduran/llmstxt/crawl/execution/CrawlRunner.kt) |
@@ -68,14 +68,14 @@ For each original batch position, admission evaluates these decisions in order:
 3. Prepare a compatible pipeline target when necessary.
 4. Reuse known compatible active work as `COALESCED`.
 5. Return a compatible fresh result as `CACHED`, unless force bypasses freshness.
-6. Apply force cooldown and durable origin backoff.
+6. Apply durable origin backoff.
 7. Leave the input pending if outstanding-work capacity is full; reserve initial monitoring only when a slot is available.
 8. Atomically create the run, decision and reservations, or reload after a conflict.
 
 Freshness is 900 seconds from the accepted observation's start. A recent failed attempt does not renew freshness.
-Force bypasses freshness; it retains active-work reuse, cooldown, quotas and all crawl safety rules.
+Force bypasses freshness; it retains active-work reuse, execution capacity, origin backoff and all crawl safety rules.
 New runs attempt at most ten pages and select at most ten resources by default. Reducing these budgets trades discovery coverage for latency. Previously queued runs retain their persisted budgets, and cached results remain available. If an older accepted selection cannot be fully validated within the new budget, preserve its last-known-good result rather than silently dropping unchecked resources.
-Only creation of a new forced run stamps the force cooldown.
+A completed run may be immediately forced again; no per-client or per-identity cooldown applies. Legacy force timestamps are ignored. Existing receipts remain recoverable through their WorkIndex keys, and obsolete batch-capacity records are no longer read or updated.
 
 Admission of a run changes four items together: identity metadata, `RUN`, the immutable `BatchItem` decision and global capacity.
 Prior capacity reads avoid unnecessary admission attempts; transaction conditions decide who wins the last slot.
@@ -86,23 +86,23 @@ The batch envelope is not one all-or-nothing transaction across its URLs. Rows r
 Up to 1,000 inputs and a 2 MiB HTTP body are accepted, with at most 2,048 UTF-8 bytes per original input.
 Every submission, including a single URL, receives a durable envelope and chunks of up to 50 original inputs; URLs are not stored together in one large DynamoDB item.
 
-Receipt proceeds in three stages: reserve a bulk slot and write META atomically; persist every input chunk with transaction witnesses; seal META only after all chunks are durable.
+Receipt proceeds in three stages: conditionally create META with its WorkIndex discovery keys; persist every input chunk with transaction witnesses; seal META only after all chunks are durable.
 Only sealed receipts can enter admission. A `202` acknowledgement therefore survives a process restart without losing accepted inputs.
-An interrupted, unacknowledged upload is recovered after its 60-second receipt deadline and releases its slot once.
+An interrupted, unacknowledged upload is recovered after its 60-second receipt deadline and retained for cleanup.
 Sealing and abandoned-upload cleanup guard the receipt state in both directions: a stale cleanup snapshot cannot discard a sealed receipt, and a late seal cannot acknowledge an upload whose cleanup has started.
 
-Five open batches of any size are allowed by default. A full receipt backlog returns `429 BACKLOG_FULL` with Retry-After instead of accepting unbounded storage work.
-Request rates remain bounded; independent URL token buckets charge the submitted input count, with default rates of 1,000/minute/client and 2,000/minute globally.
+There is no open-batch quota. Each request remains bounded to 1,000 inputs and the HTTP body/URL size limits.
+HTTP requests are not rate-limited or keyed by client IP. The bounded API executor still rejects saturation with `503`; execution capacity controls how quickly durable inputs enter the crawl queue.
 
 `BulkBatchProcessor` uses `WORK#BATCH#shard` discovery keys in the existing WorkIndex. It promotes up to 20 inputs per batch/tick through the same cache, coalescing and guarded admission operations.
 Full execution capacity leaves an input pending, without a waiting deadline. Defaults allow 12 workers and 40 outstanding runs.
 A separate bounded sweep resolves up to 100 cache, shared-run or rejection decisions per tick without allocating new runs. A capacity-blocked earlier position therefore does not block those later decisions.
 
-Each admission page reads existing decisions with a bounded Query, then groups identity metadata and referenced active runs into strongly consistent BatchGet requests. Normalized duplicate identities share reads while retaining their original input positions. Partial responses retry only unprocessed keys with a bounded budget. These observations are reused only for the initial evaluation; conditional conflicts reload the durable decision and current state. Admission writes, transaction tokens and capacity reservations remain unchanged.
+Each admission page reads existing decisions with a bounded Query, then groups identity metadata and referenced active runs into strongly consistent BatchGet requests. Normalized duplicate identities share reads while retaining their original input positions. Partial responses retry only unprocessed keys with a bounded budget. These observations are reused only for the initial evaluation; conditional conflicts reload the durable decision and current state. Conditional writes, transaction tokens and execution-capacity reservations remain authoritative.
 
 META persists an admission cursor and a resolved-input count. Each decision and its count increment share one transaction, including decisions beyond the contiguous cursor. The immutable per-position decision remains its witness, so losing a cursor acknowledgement cannot repeat a run or reservation.
 A second cursor advances only over a contiguous terminal prefix, reading at most 100 decisions/runs per check. It determines whole-batch completion without writing completion fan-out from a shared run to every referring batch.
-The bulk slot is released atomically with terminal META. Active META, input chunks and decisions have no TTL attribute. Once all positions are terminal, retention starts from completion: bounded transactions attach child TTLs and advance a durable retention checkpoint. Only after all children are retained does the terminal transaction install META TTL and release the slot. Restart or ambiguous responses resume from those checkpoints.
+Active META, input chunks and decisions have no TTL attribute. Once all positions are terminal, retention starts from completion: bounded transactions attach child TTLs and advance a durable retention checkpoint. Only after all children are retained does the terminal transaction install META TTL and remove the WorkIndex keys. Their presence is the durable pending-work witness; no separate batch-capacity reservation is required. Restart or ambiguous responses resume from those checkpoints.
 
 `GET /api/batches/{id}?offset=0&limit=100` reads only the requested input/decision range and at most 100 referenced runs.
 It returns original input positions, `totalItems`, the durable `admittedItems` checkpoint and `nextOffset`. It does not scan all 1,000 results for every poll.
@@ -256,7 +256,6 @@ Index reads are eventual discovery hints. Base-item reads and conditional writes
 | Run | `RUN#runId` | `META` | Queued/running/terminal attempt and durable commit outcome |
 | Batch | `BATCH#batchId` | `META` | Inline inputs or bulk receipt/cursors, completion and expiry |
 | Bulk inputs | `BATCH#batchId` | `INPUT#orderedChunk` | Immutable original inputs in chunks of 50 |
-| Bulk capacity | `CAPACITY#BULK` | `META` | Strict open-receipt count; created conditionally on first bulk receipt |
 | Batch decision | `BATCH#batchId` | `ITEM#orderedIndex` | Immutable decision for an original input position |
 | Capacity | `CAPACITY#GLOBAL` | `META` | Outstanding-work and monitored-identity counters |
 | Configuration | `CONFIG#GLOBAL` | `META` | Schema identity and initialized shard policy |
@@ -275,21 +274,21 @@ Terminal run details have a default seven-day TTL from termination; current resu
 
 Local initialization creates the table and atomically installs global capacity/configuration only for a fresh table.
 Startup validates existing metadata and never resets counters. Missing or incompatible initialization requires deliberate inspection.
-Production provisioning remains pending. The separate administrative `--init-aws` command initializes only a verified empty table or accepts compatible metadata without resetting counters; partial/incompatible state is rejected. The local initializer refuses AWS mode. See the [deployment guide](deployment.md).
+The separate administrative `--init-aws` command initializes only a verified empty table or accepts compatible metadata without resetting counters; partial/incompatible state is rejected. The local initializer refuses AWS mode. See the [deployment guide](deployment.md).
 
 ## Monitoring and operating limits
 
 The first accepted result establishes a seven-day window and activates checks only if a monitoring slot was reserved. When the quota is full, the result is still accepted with monitoring inactive; enable can acquire a later slot within that original window. The server scheduler discovers due work every five seconds; this does not mean a five-second crawl interval.
 Normal checks run about daily plus stable positive jitter up to 10%. Failure retry starts at 15 minutes and grows to the normal interval.
-Automatic admission bypasses freshness and interactive force cooldown while preserving compatible-work reuse, capacity and origin backoff.
+Automatic admission bypasses freshness while preserving compatible-work reuse, capacity and origin backoff.
 
 Disable releases the monitoring slot while preserving the accepted file and admitted work. Enable resumes only the original unexpired window.
 Neither refresh nor enable renews an expired window. The scheduler requires a running application, but no open browser.
 
-Defaults allow 40 outstanding runs and 50 monitored/reserved identities. Local API token buckets limit reads, submissions and force requests.
-Client identity uses the socket peer by default. Only configured trusted proxy peers may provide one valid `X-Real-IP`; proxy ranges and header overwrite behavior require verification before public hosting.
+Defaults allow 40 outstanding runs and 50 monitored/reserved identities. Additional accepted inputs remain pending; there is no batch-count quota or HTTP rate limiter.
+No client-IP resolver or trusted-proxy configuration is required.
 
-One JVM is the supported deployment. More replicas need shared or partitioned origin coordination and public rate limits.
+One JVM is the supported deployment. More replicas need shared or partitioned origin coordination.
 The global transactional capacity counter can become a hotspot; index sharding alone does not remove it.
 Receiving larger submissions, processing more work concurrently and guaranteeing a throughput target are separate capacity questions.
 

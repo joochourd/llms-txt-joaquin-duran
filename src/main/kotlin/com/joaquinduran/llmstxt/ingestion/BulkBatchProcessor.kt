@@ -73,7 +73,7 @@ class BulkBatchProcessor(
 
     fun process(id: String) {
         val initial = store.batch(id)
-        if (initial == null || !initial.bulk || !initial.bulkSlotReserved) {
+        if (initial == null || !initial.bulk || !initial.workPending) {
             availableOffsets.remove(id)
             return
         }

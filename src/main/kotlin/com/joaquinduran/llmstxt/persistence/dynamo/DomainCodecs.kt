@@ -128,7 +128,6 @@ object CrawlMetaCodec {
         optional("monitoringReservationExpiresAt", meta.monitoringReservationExpiresAt)
         optional("monitoringExpiresAt", meta.monitoringExpiresAt)
         optional("nextCheckAt", meta.nextCheckAt)
-        optional("lastForceCreatedAt", meta.lastForceCreatedAt)
         optional("dueShard", meta.dueShard?.toLong())
         optional("duePk", meta.duePk)
         optional("dueSk", meta.dueSk)
@@ -165,7 +164,6 @@ object CrawlMetaCodec {
             monitoringExpiresAt = item.ns("monitoringExpiresAt"),
             nextCheckAt = item.ns("nextCheckAt"),
             failureCount = item.n("failureCount"),
-            lastForceCreatedAt = item.ns("lastForceCreatedAt"),
             dueShard = item.ns("dueShard")?.toInt(),
             duePk = item.ss("duePk"),
             dueSk = item.ss("dueSk"),
@@ -324,7 +322,7 @@ object BatchCodec {
             return item +
                 mapOf("inputs" to strings(batch.inputs), "admissionDeadlineAt" to number(requireNotNull(batch.admissionDeadlineAt)))
         }
-        // Active backlog metadata must outlive TTL so a restarted processor can release its reservation.
+        // Pending work must outlive TTL until a restarted processor completes retention.
         return item.minus("expiresAtEpochSeconds") + mapOf(
             "retentionExpiresAtEpochSeconds" to number(batch.expiresAtEpochSeconds),
             "bulk" to bool(true),
@@ -332,7 +330,6 @@ object BatchCodec {
             "received" to bool(batch.received),
             "nextAdmissionIndex" to number(batch.nextAdmissionIndex.toLong()),
             "nextCompletionIndex" to number(batch.nextCompletionIndex.toLong()),
-            "bulkSlotReserved" to bool(batch.bulkSlotReserved),
             "resolvedInputs" to number(batch.resolvedInputs.toLong()),
             "nextRetentionIndex" to number(batch.nextRetentionIndex.toLong()),
             "receiptDeadlineAt" to number(requireNotNull(batch.receiptDeadlineAt)),
@@ -354,7 +351,7 @@ object BatchCodec {
             received = item["received"]?.bool() ?: true,
             nextAdmissionIndex = item.ns("nextAdmissionIndex")?.toInt() ?: 0,
             nextCompletionIndex = item.ns("nextCompletionIndex")?.toInt() ?: 0,
-            bulkSlotReserved = item["bulkSlotReserved"]?.bool() ?: false,
+            workPending = item.containsKey("workPk"),
             receiptDeadlineAt = item.ns("receiptDeadlineAt"),
             resolvedInputs = item.ns("resolvedInputs")?.toInt() ?: item.ns("nextAdmissionIndex")?.toInt() ?: 0,
             nextRetentionIndex = item.ns("nextRetentionIndex")?.toInt() ?: 0,

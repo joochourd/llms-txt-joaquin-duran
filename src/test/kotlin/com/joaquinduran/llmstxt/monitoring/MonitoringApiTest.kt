@@ -34,8 +34,6 @@ class MonitoringApiTest : MonitoringFixture() {
             "dynamodb.environment" to "local",
             "dynamodb.endpoint" to store.configuration.endpoint,
             "dynamodb.table" to store.table,
-            "api-limits.submissions-per-minute-per-client" to 60000,
-            "api-limits.submissions-per-minute-global" to 60000,
         )
         ApplicationContext.run(EmbeddedServer::class.java, properties).use { server ->
             HttpClient.newHttpClient().use { http ->

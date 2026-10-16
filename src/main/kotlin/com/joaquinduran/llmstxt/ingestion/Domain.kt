@@ -60,7 +60,6 @@ data class CrawlMeta(
     val monitoringExpiresAt: Long? = null,
     val nextCheckAt: Long? = null,
     val failureCount: Long = 0,
-    val lastForceCreatedAt: Long? = null,
     val dueShard: Int? = null,
     val duePk: String? = null,
     val dueSk: String? = null,
@@ -141,7 +140,8 @@ data class Batch(
     val received: Boolean = true,
     val nextAdmissionIndex: Int = 0,
     val nextCompletionIndex: Int = 0,
-    val bulkSlotReserved: Boolean = false,
+    // Derived from persisted WorkIndex keys, including pending retention work.
+    val workPending: Boolean = false,
     val receiptDeadlineAt: Long? = null,
     val resolvedInputs: Int = 0,
     val nextRetentionIndex: Int = 0,
