@@ -3,7 +3,7 @@
 A web application that turns public website URLs into downloadable [llms.txt](https://llmstxt.org/) files and checks for changes automatically.
 Submit up to 1,000 URLs, follow each result independently, preview selected pages, and download individual files or a batch ZIP.
 
-**Deployment status:** available locally; public hosting is pending.
+**Live application:** https://app-production-a0eb.up.railway.app
 
 ## Quick start
 
@@ -183,11 +183,11 @@ For formatting, use `./gradlew formatKotlin` and `./gradlew checkKotlinStyle`.
 
 ## Deployment
 
-Public deployment is pending. The intended topology is Railway HTTPS → one application JVM → one AWS DynamoDB table.
+The deployment topology is Railway HTTPS → one application JVM → one AWS DynamoDB table.
 Use the existing Dockerfile, `APP_ENV=aws`, an explicit AWS region/table, no endpoint override, and externally supplied least-privilege runtime credentials.
 The table needs string `pk`/`sk` keys and `KEYS_ONLY` indexes `WorkIndex` (`workPk`/`workSk`) and `DueIndex` (`duePk`/`dueSk`).
 Production preparation includes a minimal CloudFormation table template, a guarded administrative bootstrap command, a scoped runtime IAM policy and Railway configuration. Follow the [deployment guide](docs/deployment.md) and [.env.production.example](.env.production.example). Credentials remain outside Git; use stop-before-start releases.
-The live URL and screenshots/video will be added after public deployment is verified. GitHub autodeploy must remain disabled for the single-JVM release procedure.
+GitHub Actions tests and deploys each commit merged to `main`, using stop-before-start updates to preserve one running JVM. Railway's native GitHub autodeploy remains disabled. Screenshots/video are separate delivery artifacts.
 
 Health checks are `GET /health/liveness` and `GET /health/readiness`; readiness validates storage and returns `503` when unavailable, sharing probe results for at most two seconds. Health endpoints do not depend on the crawl queue.
 Keep the application running for automatic checks. Accepted results persist in DynamoDB and do not require an application filesystem volume.

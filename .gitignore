@@ -81,3 +81,6 @@ tmp/
 
 # Local coding-agent instructions
 /AGENTS.md
+
+# Deployment helper test caches
+__pycache__/
