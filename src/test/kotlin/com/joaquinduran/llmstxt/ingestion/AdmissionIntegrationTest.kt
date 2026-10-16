@@ -60,7 +60,7 @@ class AdmissionIntegrationTest {
         client = DynamoClients.create(dynamo)
         LocalTableBootstrap(client, dynamo).initialize()
         store = AdmissionStore(client, dynamo)
-        settings = AdmissionConfiguration().apply { maxOpenBulkBatches = 20 }
+        settings = AdmissionConfiguration()
         urls = UrlIdentityResolver(settings)
         service = AdmissionService(store, settings, urls, clock)
         status = AdmissionStatus(store, service, clock)
@@ -205,13 +205,12 @@ class AdmissionIntegrationTest {
     }
 
     @Test
-    fun `force cooldown and durable origin backoff are row errors after reuse checks`() {
+    fun `durable origin backoff remains a row error after reuse checks`() {
         val identity = seedCanonical("example.com", clock.now - 901_000)
-        replaceMeta(identity.identityId) { it.copy(lastForceCreatedAt = clock.now) }
-        val cooldown = status.batch(submitAndProcess(service, store, clock, listOf("example.com"), true).batchId).items.single()
-        assertEquals("RATE_LIMITED", cooldown.error?.code)
         store.putAbsent(base("ORIGIN#${sha256(identity.origin)}", "META", "OriginBackoff") + mapOf("blockedUntil" to number(clock.now + 60_000)))
-        val backedOff = status.batch(submitAndProcess(service, store, clock, listOf("example.com"), false).batchId).items.single()
+
+        val backedOff = status.batch(submitAndProcess(service, store, clock, listOf("example.com"), true).batchId).items.single()
+
         assertEquals("ORIGIN_BACKOFF", backedOff.error?.code)
         assertEquals(Capacity(0, 0), store.capacity())
     }
@@ -467,7 +466,7 @@ class AdmissionIntegrationTest {
     }
 
     @Test
-    fun `HTTP contracts cover malformed requests partial admission rate limits and missing or expired metadata`() {
+    fun `HTTP contracts cover malformed requests partial admission and missing or expired metadata`() {
         val properties = mapOf<String, Any>(
             "crawl.enabled" to false,
             "micronaut.server.port" to -1,
@@ -476,8 +475,6 @@ class AdmissionIntegrationTest {
             "dynamodb.table" to dynamo.table,
             "dynamodb.work-index-shards" to dynamo.workIndexShards,
             "dynamodb.due-index-shards" to dynamo.dueIndexShards,
-            "api-limits.submissions-per-minute-per-client" to 60000,
-            "api-limits.submissions-per-minute-global" to 60000,
         )
         ApplicationContext.run(EmbeddedServer::class.java, properties).use { server ->
             HttpClient.newHttpClient().use { http ->
@@ -526,9 +523,8 @@ class AdmissionIntegrationTest {
                 assertEquals(404, request("/api/batches/missing").statusCode())
                 assertEquals(202, request("/api/batches", "{\"urls\":[\"ftp://example.com\"]}").statusCode())
                 assertEquals(202, request("/api/batches", "{\"urls\":[\"example.com\"],\"force\":true}").statusCode())
-                val limited = request("/api/batches", "{\"urls\":[\"example.com\"],\"force\":true}")
-                assertEquals(429, limited.statusCode())
-                assertTrue(limited.headers().firstValue("Retry-After").isPresent)
+                val repeatedForce = request("/api/batches", "{\"urls\":[\"example.com\"],\"force\":true}")
+                assertEquals(202, repeatedForce.statusCode())
                 val run = requireNotNull(store.run(requireNotNull(response.items[0].runId)))
                 ExecutionStore(
                     store,

@@ -47,10 +47,10 @@ class AdmissionService(
             expiresAtEpochSeconds = now / 1000 + configuration.batchRetentionDays * 86400,
             bulk = true,
             received = false,
-            bulkSlotReserved = true,
+            workPending = true,
             receiptDeadlineAt = now + RECEIPT_TIMEOUT_MILLIS,
         )
-        return bulkBatches.receive(batch, configuration.maxOpenBulkBatches)
+        return bulkBatches.receive(batch)
     }
 
     fun validateInputs(inputs: List<String>) {
@@ -157,22 +157,10 @@ class AdmissionService(
                 return@repeat
             }
             val blockedUntil = store.blockedUntil(meta.effectiveOrigin ?: identity.origin)
-            val error = when {
-                batch.force && meta.lastForceCreatedAt != null &&
-                    now - meta.lastForceCreatedAt < configuration.forceIdentityCooldownSeconds * 1000 -> {
-                    DomainError("RATE_LIMITED", "A forced run was recently created for this URL. Please retry after the cooldown.")
-                }
-
-                blockedUntil > now -> {
-                    DomainError("ORIGIN_BACKOFF", "The origin is temporarily backing off. Please retry later.")
-                }
-
-                else -> {
-                    null
-                }
-            }
-            if (error != null) {
-                val decision = row(batch, index, input, Admission.REJECTED, identity.identityId).copy(error = error)
+            if (blockedUntil > now) {
+                val decision = row(batch, index, input, Admission.REJECTED, identity.identityId).copy(
+                    error = DomainError("ORIGIN_BACKOFF", "The origin is temporarily backing off. Please retry later."),
+                )
                 store.recordDecision(decision, meta, batch)?.let { return it }
                 return@repeat
             }

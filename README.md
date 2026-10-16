@@ -3,7 +3,7 @@
 A web application that turns public website URLs into downloadable [llms.txt](https://llmstxt.org/) files and checks for changes automatically.
 Submit up to 1,000 URLs, follow each result independently, preview selected pages, and download individual files or a batch ZIP.
 
-**Deployment status:** available locally; public hosting is pending.
+**Live application:** https://app-production-a0eb.up.railway.app
 
 ## Quick start
 
@@ -49,13 +49,13 @@ curl --fail -OJ "http://localhost:8080/api/batches/$BATCH_ID/download?offset=0&l
 ```
 
 All submissions persist all inputs before returning `202 Accepted` with a tracking ID and `Location` header. Inputs wait durably when admission capacity is full. Accepted inputs and queued runs have no waiting deadline; the 180-second crawl budget starts when a worker claims a run.
-Cache and active-work reuse are resolved during background admission, including when execution capacity is full. Up to five open batches are allowed by default; a full receipt backlog returns `429 BACKLOG_FULL` with `Retry-After`.
+Cache and active-work reuse are resolved during background admission, including when execution capacity is full. There is no open-batch quota or HTTP request-rate limiter; new inputs wait durably for execution capacity.
 A batch becomes `COMPLETED` when every row is terminal; inspect each item's `status` and `error`, since some rows may have failed.
 `batchId` tracks the submission, `runId` tracks an execution, and `identityId` identifies the normalized website request.
 Result pages contain at most 100 rows, with `totalItems`, `admittedItems` and `nextOffset`; use that offset for the next page. `PENDING` means an input is stored but has not yet entered the crawl queue.
 
 A compatible result is fresh for 15 minutes from its accepted observation start. Duplicate requests reuse known compatible active work.
-`"force":true` bypasses freshness, while retaining active-work reuse, cooldown, quotas and crawl safety limits.
+`"force":true` bypasses freshness, while retaining active-work reuse, execution capacity, origin backoff and crawl safety limits.
 
 Files have descriptive names derived from the website host and path. The ZIP includes one available file per input row and `batch-summary.json` with errors and downloaded hashes.
 Downloads serve the latest accepted result; batches do not pin historical files. Each ZIP covers one requested page and includes its continuation in the summary.
@@ -74,8 +74,8 @@ A ready page can download while later pages are still processing. An unfinished 
 | `POST /api/crawls/{identityId}/refresh` | Request forced regeneration |
 | `POST /api/crawls/{identityId}/monitoring` | Enable or disable checks with `{"enabled":true}` or `false` |
 
-Malformed requests return `400`; oversized bodies return `413`. Rate limits return `429` with `Retry-After`; storage or executor saturation returns `503`.
-URL rejection, source failures and force cooldowns may appear as individual row errors in an otherwise successful HTTP response.
+Malformed requests return `400`; oversized bodies return `413`. Storage or executor saturation returns `503`.
+URL rejection, source failures and origin backoff may appear as individual row errors in an otherwise successful HTTP response.
 
 ### Automatic updates
 
@@ -125,7 +125,7 @@ The complete list is in [.env.example](.env.example). Main controls:
 | `DYNAMODB_TABLE` | `llms-txt-local` | Application table |
 | `DYNAMODB_ENDPOINT` | Local: `http://localhost:8000` | Compose uses `http://dynamodb:8000`; omit in AWS mode |
 | `AWS_REGION` | `us-east-1` | AWS SDK region |
-| `MAX_BATCH_URLS` / `MAX_OPEN_BULK_BATCHES` | `1000` / `5` | Inputs per request / open bulk receipts |
+| `MAX_BATCH_URLS` | `1000` | Maximum inputs per request |
 | `MAX_API_BODY_BYTES` / `MAX_URL_BYTES` | `2097152` / `2048` | HTTP body / individual input UTF-8 byte limits |
 | `MAX_CONCURRENT_CRAWLS` | `12` | Crawl workers |
 | `MAX_OUTSTANDING_RUNS` / `MAX_MONITORED_IDENTITIES` | `40` / `50` | Durable work and monitoring quotas |
@@ -135,14 +135,14 @@ The complete list is in [.env.example](.env.example). Main controls:
 | `MONITOR_INTERVAL_SECONDS` / `MONITOR_WINDOW_SECONDS` | `86400` / `604800` | Check interval and monitoring duration |
 | `JAVA_OPTS` | Docker: `-Xmx384m -Dfile.encoding=UTF-8` | JVM options; total process memory exceeds heap size |
 
-API client identity uses the direct socket peer by default. Configure `TRUSTED_PROXY_CIDRS` only for a verified ingress proxy that overwrites `X-Real-IP`; arbitrary forwarding headers never establish trust.
+The API does not identify clients by IP or interpret proxy headers. Request-size bounds and execution/monitoring quotas remain enforced.
 
 Fresh tables use one shard per index. When reusing an older table, retain its initialized `WORK_INDEX_SHARDS` and `DUE_INDEX_SHARDS` values.
 Initialization/readiness rejects incompatible metadata and never resets counters. Dummy local credentials are supplied by Compose; keep real credentials outside Git and frontend variables.
 
 The ten-page exploration limit may be exceeded only to revalidate previously selected sources. This bounded exception retains the HTTP request, time, response-size and frontier budgets, reports `BASELINE_REVALIDATION`, and prevents older larger selections from becoming permanently unrefreshable. Failed revalidation still preserves the accepted file and identifies a failed resource without its query string.
 
-Public defaults allow six submissions/minute/client and 30/minute globally, 120 reads/minute/client and three force requests/five minutes/client, using token buckets with bounded bursts. URL budgets additionally allow 1,000 inputs/minute/client and 2,000/minute globally.
+A forced request can create a new run immediately after the previous run finishes; compatible active work is still reused.
 
 ### Host development
 
@@ -183,13 +183,13 @@ For formatting, use `./gradlew formatKotlin` and `./gradlew checkKotlinStyle`.
 
 ## Deployment
 
-Public deployment is pending. The intended topology is Railway HTTPS → one application JVM → one AWS DynamoDB table.
+The deployment topology is Railway HTTPS → one application JVM → one AWS DynamoDB table.
 Use the existing Dockerfile, `APP_ENV=aws`, an explicit AWS region/table, no endpoint override, and externally supplied least-privilege runtime credentials.
 The table needs string `pk`/`sk` keys and `KEYS_ONLY` indexes `WorkIndex` (`workPk`/`workSk`) and `DueIndex` (`duePk`/`dueSk`).
-Production preparation includes a minimal CloudFormation table template, a guarded administrative bootstrap command, a scoped runtime IAM policy and Railway configuration. Follow the [deployment guide](docs/deployment.md) and [.env.production.example](.env.production.example). Credentials remain outside Git; confirm Railway ingress trust and use stop-before-start releases before exposing the service.
-The live URL and screenshots/video will be added after public deployment is verified. GitHub autodeploy must remain disabled for the single-JVM release procedure.
+Production preparation includes a minimal CloudFormation table template, a guarded administrative bootstrap command, a scoped runtime IAM policy and Railway configuration. Follow the [deployment guide](docs/deployment.md) and [.env.production.example](.env.production.example). Credentials remain outside Git; use stop-before-start releases.
+GitHub Actions tests and deploys each commit merged to `main`, using stop-before-start updates to preserve one running JVM. Railway's native GitHub autodeploy remains disabled. Screenshots/video are separate delivery artifacts.
 
-Health checks are `GET /health/liveness` and `GET /health/readiness`; readiness validates storage and returns `503` when unavailable, sharing probe results for at most two seconds. Health requests are independent of API rate limits.
+Health checks are `GET /health/liveness` and `GET /health/readiness`; readiness validates storage and returns `503` when unavailable, sharing probe results for at most two seconds. Health endpoints do not depend on the crawl queue.
 Keep the application running for automatic checks. Accepted results persist in DynamoDB and do not require an application filesystem volume.
 
 ## Supported sources
@@ -208,5 +208,5 @@ Robots `4xx` responses permit a normal source request, except `429`, which retai
 - Crawls are bounded and remain within the effective page origin. Robots rules, redirects, timeouts and response limits can exclude important pages; selection is representative, not exhaustive.
 - All source requests use `LlmsTxtGenerator/0.4`, validate public DNS/IP destinations and redirects, honor robots/per-origin spacing and back off on HTTP 429/503.
 - Generation and automatic-monitoring quotas are independent. At most 50 identities are monitored by default; additional files remain downloadable and can enable monitoring later if a slot becomes available within their original window.
-- One JVM is supported. Origin coordination and API rate buckets are local. Forwarded client addresses require a verified trusted proxy configuration; otherwise the socket peer is used. Multiple replicas need shared coordination.
+- One JVM is supported. Origin coordination is local; multiple replicas need shared coordination.
 - Results are publicly readable by ID. There are no user accounts, ownership verification or historical downloads. Website owners must publish the generated file on their own domain.

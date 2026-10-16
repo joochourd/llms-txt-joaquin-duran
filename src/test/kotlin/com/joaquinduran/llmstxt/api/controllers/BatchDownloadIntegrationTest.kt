@@ -33,7 +33,6 @@ class BatchDownloadIntegrationTest : MonitoringFixture() {
             "dynamodb.environment" to "local",
             "dynamodb.endpoint" to store.configuration.endpoint,
             "dynamodb.table" to store.table,
-            "api-limits.reads-per-minute-per-client" to 60000,
         )
         ApplicationContext.run(EmbeddedServer::class.java, properties).use { server ->
             HttpClient.newHttpClient().use { http -> action(server, http, server.applicationContext.getBean(JsonMapper::class.java)) }
@@ -278,7 +277,7 @@ class BatchDownloadIntegrationTest : MonitoringFixture() {
         BulkBatchProcessor(store, BulkBatchStore(store, clock), service, clock).use { processor ->
             repeat(50) { processor.process(batch.batchId) }
         }
-        assertFalse(requireNotNull(store.batch(batch.batchId)).bulkSlotReserved)
+        assertFalse(requireNotNull(store.batch(batch.batchId)).workPending)
 
         withServer { server, http, mapper ->
             val filenames = mutableSetOf<String>()

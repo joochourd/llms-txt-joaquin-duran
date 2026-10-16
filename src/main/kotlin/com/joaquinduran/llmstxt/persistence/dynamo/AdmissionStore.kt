@@ -221,7 +221,7 @@ class AdmissionStore(
             runId,
             expiresAtEpochSeconds = if (batch.bulk) null else batch.expiresAtEpochSeconds,
         )
-        val metadata = runAdmissionUpdate(meta, run, reservationCheckAt, batch.force, monitoringDelta)
+        val metadata = runAdmissionUpdate(meta, run, reservationCheckAt, monitoringDelta)
         val capacity = capacityReservation(admission, monitoringDelta)
         val runPut = Put
             .builder()
@@ -245,7 +245,6 @@ class AdmissionStore(
         meta: CrawlMeta,
         run: CrawlRun,
         reservationCheckAt: Long,
-        force: Boolean,
         monitoringDelta: Long,
     ): Update {
         val metaValues = metaValues(meta).toMutableMap().apply {
@@ -253,10 +252,6 @@ class AdmissionStore(
             put(":run", text(run.runId))
         }
         val set = mutableListOf("activeRunIdHint = :run")
-        if (force) {
-            set.add("lastForceCreatedAt = :now")
-            metaValues[":now"] = number(run.queuedAt)
-        }
         if (monitoringDelta == 1L || meta.monitoringState == MonitoringState.RESERVED) {
             val reservationExpiry = maxOf(meta.monitoringReservationExpiresAt ?: 0, reservationCheckAt)
             val dueShard = meta.dueShard ?: DomainKeys.shard(run.identityId, configuration.dueIndexShards)
@@ -332,7 +327,7 @@ class AdmissionStore(
                 .tableName(table)
                 .key(DomainKeys.batch(batch.batchId))
                 .updateExpression("SET resolvedInputs = if_not_exists(resolvedInputs, :known) + :one")
-                .conditionExpression("received = :yes AND bulkSlotReserved = :yes")
+                .conditionExpression("received = :yes AND attribute_exists(workPk)")
                 .expressionAttributeValues(mapOf(":known" to number(batch.resolvedInputs.toLong()), ":one" to number(1), ":yes" to bool(true)))
                 .build(),
         ).build()

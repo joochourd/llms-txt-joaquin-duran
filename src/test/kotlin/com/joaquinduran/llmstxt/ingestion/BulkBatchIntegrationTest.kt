@@ -84,7 +84,7 @@ class BulkBatchIntegrationTest : MonitoringFixture() {
     }
 
     @Test
-    fun `shared and cached bulk decisions release a backlog slot only after all positions are terminal`() {
+    fun `shared and cached receipts finish retention only after all positions are terminal`() {
         val inputs = List(12) { "https://shared.example/" }
         val batch = service.submit(inputs, false)
         processor().use { it.process(batch.batchId) }
@@ -92,40 +92,34 @@ class BulkBatchIntegrationTest : MonitoringFixture() {
 
         assertEquals(12, rows.size)
         assertEquals(1, rows.mapNotNull { it.runId }.distinct().size)
-        assertTrue(requireNotNull(store.batch(batch.batchId)).bulkSlotReserved)
+        assertTrue(requireNotNull(store.batch(batch.batchId)).workPending)
         val run = requireNotNull(execution.claim(requireNotNull(store.run(requireNotNull(rows.first().runId)))))
         publish(run)
         processor().use { it.process(batch.batchId) }
         processor().use { it.process(batch.batchId) }
 
-        assertFalse(requireNotNull(store.batch(batch.batchId)).bulkSlotReserved)
-        assertEquals("0", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
+        assertFalse(requireNotNull(store.batch(batch.batchId)).workPending)
         assertEquals(Capacity(0, 1), store.capacity())
 
         val cached = service.submit(inputs, false)
         processor().use { it.process(cached.batchId) }
         assertTrue(store.rows(cached.batchId, true).all { it.admission == Admission.CACHED })
-        assertFalse(requireNotNull(store.batch(cached.batchId)).bulkSlotReserved)
-        assertEquals("0", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
+        assertFalse(requireNotNull(store.batch(cached.batchId)).workPending)
     }
 
     @Test
-    fun `a full backlog rejects another receipt without leaking its slot`() {
-        settings.maxOpenBulkBatches = 1
-        val accepted = service.submit(List(11) { "https://first.example/" }, false)
+    fun `receipts do not create a shared backlog counter`() {
+        val receipt = service.submit(List(11) { "https://first.example/" }, false)
+        val stored = store.get(DomainKeys.batch(receipt.batchId))
 
-        val failure = assertThrows(com.joaquinduran.llmstxt.api.errors.ApiProblem::class.java) {
-            service.submit(List(11) { "https://second.example/" }, false)
-        }
-
-        assertEquals(429, failure.status)
-        assertEquals("BACKLOG_FULL", failure.code)
-        assertTrue(requireNotNull(store.batch(accepted.batchId)).received)
-        assertEquals("1", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
+        assertTrue(stored.getValue("received").bool())
+        assertTrue(stored.containsKey("workPk"))
+        assertFalse(stored.containsKey("bulkSlotReserved"))
+        assertTrue(store.get(DomainKeys.key("CAPACITY#BULK", "META")).isEmpty())
     }
 
     @Test
-    fun `lost receipt and cursor acknowledgements resolve from durable witnesses without duplicate reservations`() {
+    fun `lost receipt and cursor acknowledgements resolve from durable witnesses without replaying decisions`() {
         val lost = mutableSetOf<String>()
         val adapter = AdmissionStore(
             proxy { method, arguments, delegate ->
@@ -150,7 +144,6 @@ class BulkBatchIntegrationTest : MonitoringFixture() {
         val accepted = receiver.submit(List(120) { "ftp://invalid.example/" }, false)
 
         assertTrue(requireNotNull(store.batch(accepted.batchId)).received)
-        assertEquals("1", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
         assertEquals(120, BulkBatchStore(store, clock).inputs(accepted, 0, 120).size)
         assertTrue(lost.size >= 3)
 
@@ -163,15 +156,14 @@ class BulkBatchIntegrationTest : MonitoringFixture() {
         assertEquals(120, completed.nextAdmissionIndex)
         assertEquals(120, completed.nextCompletionIndex)
         assertEquals(120, completed.resolvedInputs)
-        assertFalse(completed.bulkSlotReserved)
-        assertEquals("0", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
+        assertFalse(completed.workPending)
         assertTrue(lost.any { it.startsWith("SET nextAdmissionIndex") })
         assertTrue(lost.any { it.startsWith("SET nextCompletionIndex") })
-        assertTrue(lost.any { it.startsWith("SET bulkSlotReserved") })
+        assertTrue(lost.any { it.contains("REMOVE workPk") })
     }
 
     @Test
-    fun `an interrupted unacknowledged upload releases its slot after the receipt deadline`() {
+    fun `an interrupted unacknowledged upload is retained after the receipt deadline`() {
         var interruptedBatchId: String? = null
         val adapter = AdmissionStore(
             proxy { method, arguments, delegate ->
@@ -197,13 +189,12 @@ class BulkBatchIntegrationTest : MonitoringFixture() {
         val id = requireNotNull(interruptedBatchId)
         val before = requireNotNull(store.batch(id))
         assertFalse(before.received)
-        assertTrue(before.bulkSlotReserved)
+        assertTrue(before.workPending)
         clock.now = requireNotNull(before.receiptDeadlineAt)
         processor().use { it.process(id) }
         processor().use { it.process(id) }
 
-        assertFalse(requireNotNull(store.batch(id)).bulkSlotReserved)
-        assertEquals("0", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
+        assertFalse(requireNotNull(store.batch(id)).workPending)
         assertEquals(Capacity(0, 0), store.capacity())
     }
 
@@ -215,7 +206,7 @@ class BulkBatchIntegrationTest : MonitoringFixture() {
         var admittedThrough = 0
         var passes = 0
         processor().use { processor ->
-            while (requireNotNull(store.batch(batch.batchId)).bulkSlotReserved) {
+            while (requireNotNull(store.batch(batch.batchId)).workPending) {
                 assertTrue(++passes <= 280, "Admission and bounded retention checkpoints must finish without retry sleeps.")
                 processor.process(batch.batchId)
                 val current = requireNotNull(store.batch(batch.batchId))
@@ -234,11 +225,10 @@ class BulkBatchIntegrationTest : MonitoringFixture() {
         assertEquals(1000, admittedThrough)
         assertEquals((0 until 1000).toList(), store.rows(batch.batchId, true).map { it.index })
         assertEquals(Capacity(0, 50), store.capacity())
-        assertEquals("0", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
     }
 
     @Test
-    fun `missing accepted input fails closed without releasing the recoverable receipt`() {
+    fun `missing accepted input fails closed without removing the recoverable receipt`() {
         val batch = service.submit(List(11) { "https://pending.example/" }, false)
         val initial = store.get(DomainKeys.batch(batch.batchId))
         assertFalse(initial.containsKey("expiresAtEpochSeconds"))
@@ -257,12 +247,11 @@ class BulkBatchIntegrationTest : MonitoringFixture() {
 
         val retained = store.get(DomainKeys.batch(batch.batchId))
         assertFalse(retained.containsKey("expiresAtEpochSeconds"))
-        assertTrue(requireNotNull(store.batch(batch.batchId)).bulkSlotReserved)
-        assertEquals("1", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
+        assertTrue(requireNotNull(store.batch(batch.batchId)).workPending)
     }
 
     @Test
-    fun `a new processor resumes partial retention before releasing the bulk slot once`() {
+    fun `a new processor resumes partial retention before removing the work witness`() {
         val batch = service.submit(List(250) { "ftp://invalid.example/" }, false)
         processor().use { processor ->
             repeat(3) { processor.process(batch.batchId) }
@@ -271,36 +260,35 @@ class BulkBatchIntegrationTest : MonitoringFixture() {
 
         assertEquals(250, checkpoint.nextCompletionIndex)
         assertEquals(99, checkpoint.nextRetentionIndex)
-        assertTrue(checkpoint.bulkSlotReserved)
-        assertEquals("1", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
+        assertTrue(checkpoint.workPending)
 
         processor().use { processor ->
             repeat(4) { processor.process(batch.batchId) }
         }
         val completed = requireNotNull(store.batch(batch.batchId))
 
-        assertFalse(completed.bulkSlotReserved)
+        assertFalse(completed.workPending)
         assertEquals(255, completed.nextRetentionIndex)
         assertEquals(250, completed.resolvedInputs)
         assertTrue(store.rows(batch.batchId, true).all { it.expiresAtEpochSeconds == completed.expiresAtEpochSeconds })
-        assertEquals("0", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
     }
 
     @Test
-    fun `incompatible backlog counters fail closed without resetting stored data`() {
+    fun `obsolete backlog counters are ignored without resetting stored data`() {
+        val legacyKey = DomainKeys.key("CAPACITY#BULK", "META")
         update(
-            DomainKeys.key("CAPACITY#BULK", "META"),
+            legacyKey,
             "SET activeBatches = :bad",
             mapOf(
-                ":bad" to software.amazon.awssdk.services.dynamodb.model.AttributeValue
-                    .builder()
-                    .n("-1")
-                    .build(),
+                ":bad" to com.joaquinduran.llmstxt.persistence.dynamo
+                    .number(-1),
             ),
         )
+        val stored = store.get(legacyKey)
 
-        assertThrows(StorageUnavailable::class.java) { service.submit(List(11) { "https://example.com/" }, false) }
+        val receipt = service.submit(List(11) { "https://example.com/" }, false)
 
-        assertEquals("-1", store.get(DomainKeys.key("CAPACITY#BULK", "META")).getValue("activeBatches").n())
+        assertTrue(receipt.received)
+        assertEquals(stored, store.get(legacyKey))
     }
 }

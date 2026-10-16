@@ -1,0 +1,81 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: railway-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      WORK_INDEX_SHARDS: '1'
+      DUE_INDEX_SHARDS: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.21.1
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Test deployment safeguards
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Verify backend, frontend units and DynamoDB restart scenarios
+        run: ./scripts/verify.sh
+      - name: Install browser test dependencies
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Verify desktop and mobile UI
+        working-directory: frontend
+        run: npm run test:browser
+      - name: Collect failed test reports
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verification-failure
+          path: |
+            build/test-results/
+            frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Stop disposable local services
+        if: always()
+        run: docker compose down --volumes
+
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.21.1
+      - name: Install pinned Railway CLI
+        run: npm install --global @railway/cli@5.64.2
+      - name: Deploy verified main commit
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+          RAILWAY_SERVICE_ID: ${{ vars.RAILWAY_SERVICE_ID }}
+          RAILWAY_PUBLIC_URL: ${{ vars.RAILWAY_PUBLIC_URL }}
+        run: python3 scripts/deploy-railway.py "$GITHUB_SHA"

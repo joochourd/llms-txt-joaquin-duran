@@ -6,13 +6,10 @@ import com.joaquinduran.llmstxt.api.dto.BatchDownloadItem
 import com.joaquinduran.llmstxt.api.dto.BatchDownloadSummary
 import com.joaquinduran.llmstxt.api.dto.BatchRowResponse
 import com.joaquinduran.llmstxt.api.errors.ApiProblem
-import com.joaquinduran.llmstxt.api.limits.ApiRateLimiter
-import com.joaquinduran.llmstxt.api.limits.ClientIpResolver
 import com.joaquinduran.llmstxt.api.query.AdmissionStatus
 import com.joaquinduran.llmstxt.api.query.BatchPage
 import com.joaquinduran.llmstxt.persistence.dynamo.CrawlResultReader
 import com.joaquinduran.llmstxt.results.BatchArtifact
-import io.micronaut.http.HttpRequest
 import io.micronaut.http.HttpResponse
 import io.micronaut.http.annotation.Controller
 import io.micronaut.http.annotation.Get
@@ -29,18 +26,14 @@ import java.util.zip.ZipOutputStream
 class BatchDownloadController(
     private val reader: CrawlResultReader,
     private val status: AdmissionStatus,
-    private val rates: ApiRateLimiter,
-    private val clients: ClientIpResolver,
     private val mapper: JsonMapper,
 ) {
     @Get("/{batchId}/download", produces = ["application/zip"])
     fun download(
         batchId: String,
-        request: HttpRequest<*>,
         @QueryValue(defaultValue = "0") offset: Int = 0,
         @QueryValue(defaultValue = "100") limit: Int = BatchPage.MAX_PAGE_SIZE,
     ): HttpResponse<ByteArray> {
-        rates.check(clients.client(request), submission = false)
         val page = BatchPage(offset = offset, limit = limit)
         val batch = status.batch(batchId, page)
         if (batch.items.any { it.status !in setOf("COMPLETED", "FAILED", "TIMED_OUT", "EXPIRED") }) {

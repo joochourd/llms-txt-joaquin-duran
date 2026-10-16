@@ -1,6 +1,5 @@
 package com.joaquinduran.llmstxt.persistence.dynamo
 
-import com.joaquinduran.llmstxt.api.errors.ApiProblem
 import com.joaquinduran.llmstxt.ingestion.AdmissionConfiguration
 import com.joaquinduran.llmstxt.ingestion.Batch
 import jakarta.inject.Singleton
@@ -24,54 +23,21 @@ class BulkBatchStore(
 
         // One transaction item is reserved for the durable progress checkpoint.
         private const val RETENTION_CHILDREN_PER_TRANSACTION = 99
-        private val capacityKey = DomainKeys.key("CAPACITY#BULK", "META")
     }
 
     private val table get() = store.table
 
-    fun receive(
-        batch: Batch,
-        maxOpenBatches: Int,
-    ): Batch {
-        validateCapacity()
-        reserveReceipt(batch, maxOpenBatches)
+    fun receive(batch: Batch): Batch {
+        createReceipt(batch)
         persistInputs(batch)
         sealReceipt(batch)
         return batch.copy(inputs = emptyList(), received = true)
     }
 
-    private fun validateCapacity() {
-        val existingCapacity = store.get(capacityKey)
-        if (existingCapacity.isNotEmpty()) {
-            try {
-                existingCapacity.check("BulkCapacity")
-                require(existingCapacity.n("activeBatches") >= 0)
-            } catch (_: IllegalArgumentException) {
-                throw StorageUnavailable()
-            }
-        }
-    }
-
-    private fun reserveReceipt(
-        batch: Batch,
-        maxOpenBatches: Int,
-    ) {
+    private fun createReceipt(batch: Batch) {
         val header = BatchCodec.encode(batch) + workKeys(batch, requireNotNull(batch.receiptDeadlineAt))
-        val reserve = Update
-            .builder()
-            .tableName(table)
-            .key(capacityKey)
-            .updateExpression("SET entityType = :type, itemSchemaVersion = :schema ADD activeBatches :one")
-            .conditionExpression(
-                "(attribute_not_exists(pk) OR (entityType = :type AND itemSchemaVersion = :schema)) " +
-                    "AND (attribute_not_exists(activeBatches) OR activeBatches < :max)",
-            ).expressionAttributeValues(
-                mapOf(":type" to text("BulkCapacity"), ":schema" to number(1), ":one" to number(1), ":max" to number(maxOpenBatches.toLong())),
-            ).build()
-        val created = store.transact(
-            listOf(put(header), TransactWriteItem.builder().update(reserve).build()),
-        ) { store.batch(batch.batchId) != null }
-        if (!created) throw ApiProblem(429, "BACKLOG_FULL", "The durable batch backlog is full. Please retry later.", 5)
+        val created = store.transact(listOf(put(header))) { store.batch(batch.batchId) != null }
+        if (!created) throw StorageUnavailable()
     }
 
     private fun persistInputs(batch: Batch) {
@@ -81,9 +47,9 @@ class BulkBatchStore(
                 .builder()
                 .tableName(table)
                 .key(DomainKeys.batch(batch.batchId))
-                .conditionExpression("received = :no AND bulkSlotReserved = :yes AND nextCompletionIndex = :zero AND receiptDeadlineAt > :now")
+                .conditionExpression("received = :no AND attribute_exists(workPk) AND nextCompletionIndex = :zero AND receiptDeadlineAt > :now")
                 .expressionAttributeValues(
-                    mapOf(":no" to bool(false), ":yes" to bool(true), ":zero" to number(0), ":now" to number(clock.millis())),
+                    mapOf(":no" to bool(false), ":zero" to number(0), ":now" to number(clock.millis())),
                 ).build()
             val stored = store.transact(
                 listOf(put(chunk), TransactWriteItem.builder().conditionCheck(liveReceipt).build()),
@@ -102,7 +68,7 @@ class BulkBatchStore(
             .tableName(table)
             .key(DomainKeys.batch(batch.batchId))
             .updateExpression("SET received = :yes, workSk = :work")
-            .conditionExpression("received = :no AND bulkSlotReserved = :yes AND nextCompletionIndex = :zero AND receiptDeadlineAt > :now")
+            .conditionExpression("received = :no AND attribute_exists(workPk) AND nextCompletionIndex = :zero AND receiptDeadlineAt > :now")
             .expressionAttributeValues(
                 mapOf(
                     ":yes" to bool(true),
@@ -150,7 +116,7 @@ class BulkBatchStore(
             .tableName(table)
             .key(DomainKeys.batch(batch.batchId))
             .updateExpression("SET nextAdmissionIndex = :next, admissionComplete = :complete")
-            .conditionExpression("received = :yes AND bulkSlotReserved = :yes AND nextAdmissionIndex = :previous")
+            .conditionExpression("received = :yes AND attribute_exists(workPk) AND nextAdmissionIndex = :previous")
             .expressionAttributeValues(
                 mapOf(
                     ":yes" to bool(true),
@@ -177,9 +143,9 @@ class BulkBatchStore(
             .tableName(table)
             .key(DomainKeys.batch(batch.batchId))
             .updateExpression("SET nextCompletionIndex = :next")
-            .conditionExpression("bulkSlotReserved = :yes AND nextCompletionIndex = :previous")
+            .conditionExpression("attribute_exists(workPk) AND nextCompletionIndex = :previous")
             .expressionAttributeValues(
-                mapOf(":yes" to bool(true), ":previous" to number(batch.nextCompletionIndex.toLong()), ":next" to number(nextIndex.toLong())),
+                mapOf(":previous" to number(batch.nextCompletionIndex.toLong()), ":next" to number(nextIndex.toLong())),
             ).build()
         return store.transact(listOf(TransactWriteItem.builder().update(update).build())) {
             (store.batch(batch.batchId)?.nextCompletionIndex ?: 0) >= nextIndex
@@ -202,12 +168,11 @@ class BulkBatchStore(
             .key(DomainKeys.batch(batch.batchId))
             .updateExpression("SET nextCompletionIndex = :total, retentionExpiresAtEpochSeconds = :ttl")
             // Seal and abandoned-upload cleanup must not both win from the same unsealed receipt.
-            .conditionExpression("bulkSlotReserved = :yes AND received = :received AND nextCompletionIndex = :previous")
+            .conditionExpression("attribute_exists(workPk) AND received = :received AND nextCompletionIndex = :previous")
             .expressionAttributeValues(
                 mapOf(
                     ":total" to number(batch.totalInputs.toLong()),
                     ":ttl" to number(expiry),
-                    ":yes" to bool(true),
                     ":received" to bool(batch.received),
                     ":previous" to number(batch.nextCompletionIndex.toLong()),
                 ),
@@ -217,9 +182,9 @@ class BulkBatchStore(
         }
     }
 
-    /** Attach retention in bounded transactions before releasing the durable receipt witness and slot. */
+    /** Attach retention in bounded transactions before removing the durable work witness. */
     fun finalizeRetention(batch: Batch) {
-        if (!batch.bulkSlotReserved || batch.nextCompletionIndex != batch.totalInputs) return
+        if (!batch.workPending || batch.nextCompletionIndex != batch.totalInputs) return
         val chunkCount = (batch.totalInputs + INPUTS_PER_CHUNK - 1) / INPUTS_PER_CHUNK
         val childCount = chunkCount + if (batch.received) batch.totalInputs else 0
         val end = minOf(childCount, batch.nextRetentionIndex + RETENTION_CHILDREN_PER_TRANSACTION)
@@ -254,7 +219,7 @@ class BulkBatchStore(
                 .key(DomainKeys.batch(batch.batchId))
                 .updateExpression("SET nextRetentionIndex = :next")
                 .conditionExpression(
-                    "bulkSlotReserved = :yes AND nextCompletionIndex = :total AND " +
+                    "attribute_exists(workPk) AND nextCompletionIndex = :total AND " +
                         if (batch.nextRetentionIndex == 0) {
                             "(attribute_not_exists(nextRetentionIndex) OR nextRetentionIndex = :previous)"
                         } else {
@@ -262,7 +227,6 @@ class BulkBatchStore(
                         },
                 ).expressionAttributeValues(
                     mapOf(
-                        ":yes" to bool(true),
                         ":total" to number(batch.totalInputs.toLong()),
                         ":previous" to number(batch.nextRetentionIndex.toLong()),
                         ":next" to number(end.toLong()),
@@ -280,32 +244,22 @@ class BulkBatchStore(
             .builder()
             .tableName(table)
             .key(DomainKeys.batch(batch.batchId))
-            .updateExpression("SET bulkSlotReserved = :no, nextCompletionIndex = :total, expiresAtEpochSeconds = :ttl REMOVE workPk, workSk")
-            .conditionExpression("bulkSlotReserved = :yes AND nextCompletionIndex = :previous AND nextRetentionIndex = :children")
+            .updateExpression("SET nextCompletionIndex = :total, expiresAtEpochSeconds = :ttl REMOVE workPk, workSk, bulkSlotReserved")
+            .conditionExpression("attribute_exists(workPk) AND nextCompletionIndex = :previous AND nextRetentionIndex = :children")
             .expressionAttributeValues(
                 mapOf(
                     ":children" to
                         number(
                             ((batch.totalInputs + INPUTS_PER_CHUNK - 1) / INPUTS_PER_CHUNK + if (batch.received) batch.totalInputs else 0).toLong(),
                         ),
-                    ":no" to bool(false),
-                    ":yes" to bool(true),
                     ":total" to number(batch.totalInputs.toLong()),
                     ":previous" to number(batch.nextCompletionIndex.toLong()),
                     ":ttl" to number(batch.expiresAtEpochSeconds),
                 ),
             ).build()
-        val release = Update
-            .builder()
-            .tableName(table)
-            .key(capacityKey)
-            .updateExpression("ADD activeBatches :minus")
-            .conditionExpression("activeBatches >= :one")
-            .expressionAttributeValues(mapOf(":minus" to number(-1), ":one" to number(1)))
-            .build()
-        return store.transact(
-            listOf(TransactWriteItem.builder().update(terminal).build(), TransactWriteItem.builder().update(release).build()),
-        ) { store.batch(batch.batchId)?.bulkSlotReserved == false }
+        return store.transact(listOf(TransactWriteItem.builder().update(terminal).build())) {
+            store.batch(batch.batchId)?.workPending == false
+        }
     }
 
     fun due(
